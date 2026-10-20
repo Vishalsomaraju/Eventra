@@ -17,11 +17,10 @@ export function createApp(options?: AppOptions): Express {
   // Security headers
   app.use(helmet());
 
-  // CORS restriction
+  // CORS restriction (stateless API does not use cookies or cross-site credentials)
   app.use(
     cors({
       origin: config.corsOrigin,
-      credentials: true,
     })
   );
 
@@ -64,6 +63,14 @@ export function createApp(options?: AppOptions): Express {
     res.status(404).json({
       success: false,
       error: 'Endpoint not found',
+    });
+  });
+
+  // Global error handler - guarantees sanitized 500 JSON response without stack traces
+  app.use((_err: unknown, _req: Request, res: Response, _next: NextFunction): void => {
+    res.status(500).json({
+      success: false,
+      error: 'An internal server error occurred.',
     });
   });
 

@@ -14,7 +14,7 @@ export interface AppConfig {
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const parsedPort = parseInt(env.PORT || '5000', 10);
-  const port = isNaN(parsedPort) || parsedPort <= 0 ? 5000 : parsedPort;
+  const port = isNaN(parsedPort) || parsedPort <= 0 || parsedPort > 65535 ? 5000 : parsedPort;
 
   const geminiApiKey =
     env.GEMINI_API_KEY && env.GEMINI_API_KEY.trim().length > 0
@@ -27,11 +27,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       : 'gemini-2.5-flash';
 
   const parsedTimeout = parseInt(env.GEMINI_TIMEOUT_MS || '15000', 10);
-  const geminiTimeoutMs = isNaN(parsedTimeout) || parsedTimeout <= 0 ? 15000 : parsedTimeout;
+  const geminiTimeoutMs = isNaN(parsedTimeout) || parsedTimeout <= 0 || parsedTimeout > 300_000 ? 15000 : parsedTimeout;
+
+  const nodeEnv = env.NODE_ENV === 'production' || env.NODE_ENV === 'test' ? env.NODE_ENV : 'development';
 
   return {
     port,
-    nodeEnv: env.NODE_ENV || 'development',
+    nodeEnv,
     corsOrigin: env.CORS_ORIGIN || 'http://localhost:5173',
     databaseUrl: env.DATABASE_URL && env.DATABASE_URL.trim().length > 0 ? env.DATABASE_URL.trim() : undefined,
     geminiApiKey,

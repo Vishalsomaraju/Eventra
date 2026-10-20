@@ -1,4 +1,4 @@
-import { Router, Request, Response } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { validatePlanInput } from '../validators/planValidator';
 import { generateEventPlan, GeminiClientLike } from '../services/geminiService';
 import { createRateLimiter } from '../middleware/rateLimiter';
@@ -30,25 +30,27 @@ export function createPlansRouter(options?: PlansRouterOptions): Router {
   router.post(
     '/generate',
     planGenerationLimiter,
-    async (req: Request, res: Response): Promise<void> => {
-      // Validate Content-Type for requests with body payload
-      const contentType = req.headers['content-type'];
-      const contentLength = req.headers['content-length'];
-      const hasBody =
-        (contentLength !== undefined && parseInt(contentLength, 10) > 0) ||
-        Boolean(req.body && Object.keys(req.body).length > 0);
-
-      if (hasBody) {
-        if (!contentType || !contentType.toLowerCase().includes('application/json')) {
-          res.status(415).json({
-            success: false,
-            error: 'Unsupported Media Type: Content-Type must be application/json.',
-          });
-          return;
-        }
-      }
-
+    async (req: Request, res: Response, next: NextFunction): Promise<void> => {
       try {
+        // Validate Content-Type for requests with body payload
+        const rawContentType = req.headers['content-type'];
+        const contentType = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
+        const contentLength = req.headers['content-length'];
+        const parsedLength = contentLength ? parseInt(contentLength, 10) : 0;
+        const hasBody =
+          (!isNaN(parsedLength) && parsedLength > 0) ||
+          Boolean(req.body && Object.keys(req.body).length > 0);
+
+        if (hasBody) {
+          if (!contentType || typeof contentType !== 'string' || !contentType.toLowerCase().includes('application/json')) {
+            res.status(415).json({
+              success: false,
+              error: 'Unsupported Media Type: Content-Type must be application/json.',
+            });
+            return;
+          }
+        }
+
         const validation = validatePlanInput(req.body);
 
         if (!validation.valid || !validation.data) {
@@ -67,12 +69,9 @@ export function createPlansRouter(options?: PlansRouterOptions): Router {
           success: true,
           data: plan,
         });
-      } catch {
-        // Do not expose internal stack traces or database info to clients
-        res.status(500).json({
-          success: false,
-          error: 'An internal error occurred while generating the plan.',
-        });
+      } catch (err) {
+        // Pass unhandled async errors to Express's global error handler
+        next(err);
       }
     }
   );

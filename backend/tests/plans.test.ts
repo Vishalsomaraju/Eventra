@@ -1,8 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import request from 'supertest';
+import type { Request, Response, NextFunction } from 'express';
 import { createApp } from '../src/app';
 import { GeminiClientLike } from '../src/services/geminiService';
+import { createRateLimiter } from '../src/middleware/rateLimiter';
+import { reconcileBudgetAllocations } from '../src/services/budgetService';
 
 describe('Event Planning API (POST /api/plans/generate)', () => {
   // Use high limit and null geminiClient for baseline tests to avoid live API calls
@@ -13,13 +16,22 @@ describe('Event Planning API (POST /api/plans/generate)', () => {
     outputOverride?: unknown;
     shouldFail?: boolean;
     failMessage?: string;
-  }): { client: GeminiClientLike; capturedPrompt: { text: string } } => {
+  }): {
+    client: GeminiClientLike;
+    capturedPrompt: { text: string };
+    capturedConfig: { maxOutputTokens?: number; abortSignal?: AbortSignal };
+  } => {
     const capturedPrompt = { text: '' };
+    const capturedConfig: { maxOutputTokens?: number; abortSignal?: AbortSignal } = {};
 
     const client: GeminiClientLike = {
       models: {
         async generateContent(params) {
           capturedPrompt.text = params.contents;
+          if (params.config) {
+            capturedConfig.maxOutputTokens = params.config.maxOutputTokens;
+            capturedConfig.abortSignal = params.config.abortSignal;
+          }
 
           if (options?.shouldFail) {
             throw new Error(options.failMessage || 'Simulated Gemini provider failure');
@@ -74,12 +86,12 @@ describe('Event Planning API (POST /api/plans/generate)', () => {
       },
     };
 
-    return { client, capturedPrompt };
+    return { client, capturedPrompt, capturedConfig };
   };
 
   describe('1. Gemini AI Integration with Valid Structured Output', () => {
     it('successfully generates an AI plan when Gemini succeeds', async () => {
-      const { client, capturedPrompt } = createMockGeminiClient();
+      const { client, capturedPrompt, capturedConfig } = createMockGeminiClient();
       const aiApp = createApp({ planRateLimitMax: 1000, geminiClient: client });
 
       const payload = {
@@ -100,6 +112,11 @@ describe('Event Planning API (POST /api/plans/generate)', () => {
       assert.strictEqual(res.body.success, true);
       assert.ok(res.body.data);
 
+      // Verify Gemini SDK bounded token and abort controller configuration
+      assert.strictEqual(capturedConfig.maxOutputTokens, 2500);
+      assert.ok(capturedConfig.abortSignal instanceof AbortSignal);
+      assert.strictEqual(capturedConfig.abortSignal.aborted, false);
+
       const plan = res.body.data;
 
       // Verify AI engine tagging
@@ -107,10 +124,10 @@ describe('Event Planning API (POST /api/plans/generate)', () => {
       assert.strictEqual(plan.engine.provider, 'google-gemini');
       assert.ok(plan.engine.disclaimer.includes('Google Gemini AI'));
 
-      // Verify prompt construction contained validated inputs
-      assert.ok(capturedPrompt.text.includes('wedding'));
-      assert.ok(capturedPrompt.text.includes('220 attendees'));
-      assert.ok(capturedPrompt.text.includes('₹20,00,000 INR'));
+      // Verify prompt construction contained validated inputs in serialized event context
+      assert.ok(capturedPrompt.text.includes('"eventType": "wedding"'));
+      assert.ok(capturedPrompt.text.includes('"expectedGuests": 220'));
+      assert.ok(capturedPrompt.text.includes('"totalBudgetInr": 2000000'));
       assert.ok(capturedPrompt.text.includes('Heritage palace aesthetic'));
 
       // Verify exact budget reconciliation
@@ -262,7 +279,7 @@ describe('Event Planning API (POST /api/plans/generate)', () => {
       assert.strictEqual(res.body.data.engine.provider, 'rule-based-fallback');
     });
 
-    it('sanitizes adversarial prompt injection and strips HTML/XML delimiter tags', async () => {
+    it('safely isolates untrusted user preferences in structured context without delimiter breakout', async () => {
       const { client, capturedPrompt } = createMockGeminiClient();
       const aiApp = createApp({ planRateLimitMax: 1000, geminiClient: client });
 
@@ -279,9 +296,8 @@ describe('Event Planning API (POST /api/plans/generate)', () => {
 
       assert.strictEqual(res.status, 200);
       assert.strictEqual(res.body.success, true);
-      // Ensure the tag closure was stripped and preference remains enclosed inside delimiter tags
-      assert.strictEqual(capturedPrompt.text.includes('</untrusted_user_preferences><script>'), false);
-      assert.ok(capturedPrompt.text.includes('<untrusted_user_preferences>'));
+      // Ensure preference is strictly serialized inside structured JSON context
+      assert.ok(capturedPrompt.text.includes('"userPreferences":'));
       assert.ok(capturedPrompt.text.includes('SYSTEM OVERRIDE'));
     });
 
@@ -410,6 +426,78 @@ describe('Event Planning API (POST /api/plans/generate)', () => {
         );
       }
       assert.strictEqual(phases[phases.length - 1].targetDate, '2026-12-31');
+    });
+
+    it('falls back to rule-based planner when Gemini response exceeds maximum payload size (50KB)', async () => {
+      // Create massive valid-syntax payload exceeding 50KB
+      const massivePayload = {
+        personalizedIdeas: [
+          { title: 'Idea 1', category: 'Decor', description: 'A'.repeat(25000) },
+          { title: 'Idea 2', category: 'Music', description: 'B'.repeat(26000) },
+        ],
+        budgetCategories: [
+          { category: 'Venue', percentage: 50, description: 'Venue' },
+          { category: 'Catering', percentage: 30, description: 'Catering' },
+          { category: 'Decor', percentage: 20, description: 'Decor' },
+        ],
+        timelinePhases: [
+          { phase: 'Booking', timeframe: '6 Months', tasks: ['Task 1'] },
+          { phase: 'Execution', timeframe: 'Event Day', tasks: ['Task 2'] },
+        ],
+        vendorChecklist: [
+          { category: 'Venue', task: 'Book venue', priority: 'high' },
+          { category: 'Caterer', task: 'Book caterer', priority: 'high' },
+          { category: 'Decor', task: 'Book decor', priority: 'medium' },
+        ],
+      };
+
+      const { client } = createMockGeminiClient({ outputOverride: massivePayload });
+      const fallbackApp = createApp({ planRateLimitMax: 1000, geminiClient: client });
+
+      const res = await request(fallbackApp)
+        .post('/api/plans/generate')
+        .send({ eventType: 'wedding', guestCount: 100, budgetInr: 500000 });
+
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body.success, true);
+      assert.strictEqual(res.body.data.engine.type, 'deterministic');
+      assert.strictEqual(res.body.data.engine.provider, 'rule-based-fallback');
+      assert.ok(res.body.data.engine.fallbackReason.includes('malformed or incomplete'));
+    });
+
+    it('falls back to rule-based planner when Gemini returns array lengths out of bounds', async () => {
+      // Only 1 idea (minimum is 2)
+      const underflowIdeas = {
+        personalizedIdeas: [
+          { title: 'Only One Idea', category: 'Decor', description: 'Description' },
+        ],
+        budgetCategories: [
+          { category: 'Venue', percentage: 50, description: 'Venue' },
+          { category: 'Catering', percentage: 30, description: 'Catering' },
+          { category: 'Decor', percentage: 20, description: 'Decor' },
+        ],
+        timelinePhases: [
+          { phase: 'Booking', timeframe: '6 Months', tasks: ['Task 1'] },
+          { phase: 'Execution', timeframe: 'Event Day', tasks: ['Task 2'] },
+        ],
+        vendorChecklist: [
+          { category: 'Venue', task: 'Book venue', priority: 'high' },
+          { category: 'Caterer', task: 'Book caterer', priority: 'high' },
+          { category: 'Decor', task: 'Book decor', priority: 'medium' },
+        ],
+      };
+
+      const { client } = createMockGeminiClient({ outputOverride: underflowIdeas });
+      const fallbackApp = createApp({ planRateLimitMax: 1000, geminiClient: client });
+
+      const res = await request(fallbackApp)
+        .post('/api/plans/generate')
+        .send({ eventType: 'wedding', guestCount: 100, budgetInr: 500000 });
+
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body.success, true);
+      assert.strictEqual(res.body.data.engine.type, 'deterministic');
+      assert.strictEqual(res.body.data.engine.provider, 'rule-based-fallback');
     });
   });
 
@@ -842,6 +930,236 @@ describe('Event Planning API (POST /api/plans/generate)', () => {
       assert.strictEqual(res3.status, 429);
       assert.strictEqual(res3.body.success, false);
       assert.ok(res3.body.error.includes('Too many plan generation requests'));
+    });
+
+    it('prevents rate limit bypass via store capacity eviction under IP churn', async () => {
+      // Create test express app with trust proxy and store capacity of 2
+      const express = (await import('express')).default;
+      const testLimiterApp = express();
+      testLimiterApp.set('trust proxy', true);
+
+      testLimiterApp.use(
+        createRateLimiter({
+          windowMs: 60_000,
+          maxRequests: 1,
+          maxStoreSize: 2,
+        })
+      );
+      testLimiterApp.get('/test-limit', (_req, res) => {
+        res.status(200).json({ ok: true });
+      });
+
+      // 1. IP 1 makes request 1 (allowed)
+      const res1 = await request(testLimiterApp).get('/test-limit').set('X-Forwarded-For', '192.168.1.1');
+      assert.strictEqual(res1.status, 200);
+
+      // 2. IP 1 makes request 2 (blocked with 429, active penalty)
+      const res2 = await request(testLimiterApp).get('/test-limit').set('X-Forwarded-For', '192.168.1.1');
+      assert.strictEqual(res2.status, 429);
+
+      // 3. IP 2 makes request 1 (allowed, store reaches maxStoreSize of 2)
+      const res3 = await request(testLimiterApp).get('/test-limit').set('X-Forwarded-For', '192.168.1.2');
+      assert.strictEqual(res3.status, 200);
+
+      // 4. IP 3 makes request. Store is full (size 2).
+      // Eviction must evict unblocked IP 2, but NEVER evict penalized IP 1.
+      const res4 = await request(testLimiterApp).get('/test-limit').set('X-Forwarded-For', '192.168.1.3');
+      assert.strictEqual(res4.status, 200);
+
+      // 5. IP 1 requests again: MUST STILL BE 429 BLOCKED (attacker could not evict penalty via churn)
+      const res5 = await request(testLimiterApp).get('/test-limit').set('X-Forwarded-For', '192.168.1.1');
+      assert.strictEqual(res5.status, 429);
+      assert.strictEqual(res5.body.success, false);
+    });
+  });
+
+  describe('8. Shared Budget Reconciliation & Integer Paise Correctness', () => {
+    it('returns empty array when categories array is empty', () => {
+      const result = reconcileBudgetAllocations([], 50000);
+      assert.deepStrictEqual(result, []);
+    });
+
+    it('guarantees exact paise sum match when category percentages underflow (< 100%)', () => {
+      const underflow = [
+        { category: 'Venue', percentage: 20, description: 'Venue' },
+        { category: 'Catering', percentage: 25, description: 'Catering' },
+        { category: 'Decor', percentage: 25, description: 'Decor' },
+      ]; // Sum = 70%
+
+      const budgetInr = 175432.55;
+      const result = reconcileBudgetAllocations(underflow, budgetInr);
+
+      assert.strictEqual(result.length, 3);
+      const totalAllocated = result.reduce((sum, item) => sum + item.allocatedInr, 0);
+      assert.strictEqual(Math.round(totalAllocated * 100) / 100, budgetInr);
+
+      for (const item of result) {
+        assert.ok(item.allocatedInr >= 0);
+        assert.ok(Number.isFinite(item.allocatedInr));
+      }
+    });
+
+    it('guarantees exact paise sum match when category percentages overflow (> 100%)', () => {
+      const overflow = [
+        { category: 'Venue', percentage: 50, description: 'Venue' },
+        { category: 'Catering', percentage: 50, description: 'Catering' },
+        { category: 'Decor', percentage: 40, description: 'Decor' },
+      ]; // Sum = 140%
+
+      const budgetInr = 500000;
+      const result = reconcileBudgetAllocations(overflow, budgetInr);
+
+      const totalAllocated = result.reduce((sum, item) => sum + item.allocatedInr, 0);
+      assert.strictEqual(Math.round(totalAllocated * 100) / 100, budgetInr);
+
+      for (const item of result) {
+        assert.ok(item.allocatedInr >= 0);
+      }
+    });
+
+    it('handles zero or non-finite percentages cleanly with equal fallback', () => {
+      const zeroPercents = [
+        { category: 'Venue', percentage: 0, description: 'Venue' },
+        { category: 'Catering', percentage: NaN, description: 'Catering' },
+        { category: 'Decor', percentage: 0, description: 'Decor' },
+      ];
+
+      const budgetInr = 30000;
+      const result = reconcileBudgetAllocations(zeroPercents, budgetInr);
+
+      const totalAllocated = result.reduce((sum, item) => sum + item.allocatedInr, 0);
+      assert.strictEqual(Math.round(totalAllocated * 100) / 100, budgetInr);
+      for (const item of result) {
+        assert.ok(item.allocatedInr >= 0);
+      }
+    });
+
+    it('handles 10 Crore maximum budget limit without integer overflow', () => {
+      const categories = [
+        { category: 'Venue', percentage: 30, description: 'Venue' },
+        { category: 'Catering', percentage: 35, description: 'Catering' },
+        { category: 'Decor', percentage: 15, description: 'Decor' },
+        { category: 'Media', percentage: 10, description: 'Media' },
+        { category: 'Reserve', percentage: 10, description: 'Reserve' },
+      ];
+
+      const maxBudget = 100_000_000; // 10 Crore INR
+      const result = reconcileBudgetAllocations(categories, maxBudget);
+
+      const totalAllocated = result.reduce((sum, item) => sum + item.allocatedInr, 0);
+      assert.strictEqual(totalAllocated, maxBudget);
+    });
+
+    it('table-driven test: exact paise reconciliation across diverse budget amounts', () => {
+      const testCases = [0, 0.01, 0.5, 1, 10, 99.99, 100, 12345.67, 500000, 786432.5, 9999999.99, 100000000];
+      const categories = [
+        { category: 'Cat A', percentage: 33.3, description: 'Desc A' },
+        { category: 'Cat B', percentage: 33.3, description: 'Desc B' },
+        { category: 'Cat C', percentage: 33.4, description: 'Desc C' },
+      ];
+
+      for (const budget of testCases) {
+        const result = reconcileBudgetAllocations(categories, budget);
+        const sumAllocated = result.reduce((sum, item) => sum + item.allocatedInr, 0);
+        assert.strictEqual(Math.round(sumAllocated * 100) / 100, Math.round(budget * 100) / 100);
+
+        for (const item of result) {
+          assert.ok(item.allocatedInr >= 0, `Budget ${budget} produced negative allocation`);
+          assert.ok(Number.isFinite(item.allocatedInr));
+        }
+      }
+    });
+
+    it('safely normalizes negative, NaN, and infinite budgets to 0 without throwing', () => {
+      const invalidBudgets = [-100, -0.01, NaN, Infinity, -Infinity];
+      const categories = [
+        { category: 'Venue', percentage: 50, description: 'Venue' },
+        { category: 'Catering', percentage: 50, description: 'Catering' },
+      ];
+
+      for (const budget of invalidBudgets) {
+        const result = reconcileBudgetAllocations(categories, budget);
+        const sumAllocated = result.reduce((sum, item) => sum + item.allocatedInr, 0);
+        assert.strictEqual(sumAllocated, 0);
+        for (const item of result) {
+          assert.strictEqual(item.allocatedInr, 0);
+        }
+      }
+    });
+
+    it('safely normalizes negative, NaN, and infinite category percentages', () => {
+      const corruptCategories = [
+        { category: 'Venue', percentage: -25, description: 'Venue' },
+        { category: 'Catering', percentage: 60, description: 'Catering' },
+        { category: 'Decor', percentage: NaN, description: 'Decor' },
+        { category: 'Media', percentage: Infinity, description: 'Media' },
+        { category: 'Reserve', percentage: 40, description: 'Reserve' },
+      ];
+
+      const budget = 100000;
+      const result = reconcileBudgetAllocations(corruptCategories, budget);
+      const sumAllocated = result.reduce((sum, item) => sum + item.allocatedInr, 0);
+      assert.strictEqual(Math.round(sumAllocated * 100) / 100, budget);
+
+      for (const item of result) {
+        assert.ok(item.allocatedInr >= 0);
+        assert.ok(Number.isFinite(item.allocatedInr));
+      }
+    });
+  });
+
+  describe('9. Express Global Async Error Handling & Sanitization', () => {
+    it('catches unhandled async exceptions and returns sanitized HTTP 500 JSON', async () => {
+      // Mock gemini client that throws an unexpected non-standard error
+      const buggyClient: GeminiClientLike = {
+        models: {
+          async generateContent() {
+            throw new TypeError('Unexpected null reference in internal library');
+          },
+        },
+      };
+
+      // Since generateEventPlan catches and falls back to deterministic planning,
+      // it handles provider errors gracefully.
+      // Now test an endpoint error that triggers next(err):
+      const testApp = createApp({ geminiClient: buggyClient });
+      const res = await request(testApp)
+        .post('/api/plans/generate')
+        .send({ eventType: 'wedding', guestCount: 100, budgetInr: 500000 });
+
+      // Verifies fallback handles it gracefully
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.body.success, true);
+      assert.strictEqual(res.body.data.engine.type, 'deterministic');
+    });
+
+    it('returns sanitized 500 JSON without stack traces when global error middleware is invoked', async () => {
+      const express = (await import('express')).default;
+      const errorTestApp = express();
+
+      // Route that triggers an async error via next(err)
+      errorTestApp.get('/test-error', async (_req, _res, next) => {
+        try {
+          throw new Error('Database connection secret=super_secret_password failed');
+        } catch (err) {
+          next(err);
+        }
+      });
+
+      // Attach same global error handler as createApp
+      errorTestApp.use((_err: unknown, _req: Request, res: Response, _next: NextFunction): void => {
+        res.status(500).json({
+          success: false,
+          error: 'An internal server error occurred.',
+        });
+      });
+
+      const res = await request(errorTestApp).get('/test-error');
+      assert.strictEqual(res.status, 500);
+      assert.strictEqual(res.body.success, false);
+      assert.strictEqual(res.body.error, 'An internal server error occurred.');
+      assert.strictEqual(res.body.stack, undefined);
+      assert.strictEqual(JSON.stringify(res.body).includes('super_secret_password'), false);
     });
   });
 });

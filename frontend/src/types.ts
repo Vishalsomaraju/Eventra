@@ -90,7 +90,7 @@ export interface PlanApiSuccessResponse {
 export interface PlanApiErrorResponse {
   success: false;
   error: string;
-  details?: Record<string, string>;
+  details?: string[] | Record<string, string>;
 }
 
 export type PlanApiResponse = PlanApiSuccessResponse | PlanApiErrorResponse;

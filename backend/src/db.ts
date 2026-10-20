@@ -3,18 +3,25 @@ import { config } from './config';
 
 let pool: Pool | null = null;
 
+export function getSslConfig(databaseUrl?: string, nodeEnv?: string): { rejectUnauthorized: boolean } | undefined {
+  if (!databaseUrl) {
+    return undefined;
+  }
+  const isNeon = databaseUrl.includes('neon.tech');
+  const isProduction = nodeEnv === 'production';
+  // Enforce standard TLS certificate verification (rejectUnauthorized: true) for Neon and production
+  return isNeon || isProduction ? { rejectUnauthorized: true } : undefined;
+}
+
 export function getDatabasePool(): Pool | null {
   if (!config.databaseUrl) {
     return null;
   }
 
   if (!pool) {
-    const isNeon = config.databaseUrl.includes('neon.tech');
-    const isProduction = config.nodeEnv === 'production';
-
     pool = new Pool({
       connectionString: config.databaseUrl,
-      ssl: isNeon || isProduction ? { rejectUnauthorized: false } : undefined,
+      ssl: getSslConfig(config.databaseUrl, config.nodeEnv),
       max: 10,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 5000,
@@ -30,8 +37,9 @@ export interface DatabaseHealthStatus {
   error?: string;
 }
 
-export async function checkDatabaseConnection(): Promise<DatabaseHealthStatus> {
-  if (!config.databaseUrl) {
+export async function checkDatabaseConnection(overrideUrl?: string | null): Promise<DatabaseHealthStatus> {
+  const dbUrl = overrideUrl !== undefined ? overrideUrl : config.databaseUrl;
+  if (!dbUrl) {
     return { configured: false, connected: false };
   }
 

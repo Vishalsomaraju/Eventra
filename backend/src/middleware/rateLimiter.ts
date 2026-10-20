@@ -17,12 +17,13 @@ export function createRateLimiter(options: {
   windowMs: number;
   maxRequests: number;
   message?: string;
+  maxStoreSize?: number;
 }) {
-  const { windowMs, maxRequests, message } = options;
+  const { windowMs, maxRequests, message, maxStoreSize = 10_000 } = options;
   const store = new Map<string, RateLimitRecord>();
 
   // Maximum number of distinct client keys allowed in memory to prevent memory exhaustion
-  const MAX_STORE_SIZE = 10_000;
+  const MAX_STORE_SIZE = maxStoreSize;
 
   // Cleanup expired entries periodically to prevent memory growth
   const cleanupInterval = setInterval(() => {
@@ -47,19 +48,45 @@ export function createRateLimiter(options: {
     const record = store.get(ip);
 
     if (!record || now > record.resetTimeMs) {
-      // Evict oldest or expired keys if store reaches capacity under heavy IP flooding
+      // Manage store capacity to prevent memory exhaustion under IP flooding
       if (store.size >= MAX_STORE_SIZE) {
+        // 1. Purge expired records first
         for (const [key, r] of store.entries()) {
           if (now > r.resetTimeMs) {
             store.delete(key);
           }
         }
-        // If still full after deleting expired, prune the oldest entry
+
+        // 2. If still full, only evict unblocked entries (count <= maxRequests).
+        // Active rate-limited records must NEVER be evicted, otherwise an attacker
+        // could bypass active rate limits by flooding new dummy IP entries.
         if (store.size >= MAX_STORE_SIZE) {
-          const firstKey = store.keys().next().value;
-          if (firstKey) {
-            store.delete(firstKey);
+          for (const [key, r] of store.entries()) {
+            if (r.count <= maxRequests) {
+              store.delete(key);
+              if (store.size < MAX_STORE_SIZE) {
+                break;
+              }
+            }
           }
+        }
+
+        // 3. If the store is STILL saturated with active rate-limited entries,
+        // reject new untracked connection rather than wiping active penalties.
+        if (store.size >= MAX_STORE_SIZE) {
+          let minResetTimeMs = now + windowMs;
+          for (const r of store.values()) {
+            if (r.resetTimeMs < minResetTimeMs) {
+              minResetTimeMs = r.resetTimeMs;
+            }
+          }
+          const retryAfterSec = Math.max(1, Math.ceil((minResetTimeMs - now) / 1000));
+          res.setHeader('Retry-After', retryAfterSec.toString());
+          res.status(429).json({
+            success: false,
+            error: message || 'Too many plan generation requests. Please try again later.',
+          });
+          return;
         }
       }
 
@@ -79,7 +106,7 @@ export function createRateLimiter(options: {
     // Existing window
     record.count += 1;
     const remaining = Math.max(0, maxRequests - record.count);
-    const retryAfterSec = Math.ceil((record.resetTimeMs - now) / 1000);
+    const retryAfterSec = Math.max(1, Math.ceil((record.resetTimeMs - now) / 1000));
 
     res.setHeader('X-RateLimit-Limit', maxRequests.toString());
     res.setHeader('X-RateLimit-Remaining', remaining.toString());

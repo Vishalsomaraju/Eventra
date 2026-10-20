@@ -9,6 +9,7 @@ import {
   SupportedEventType,
   VendorChecklistItem,
 } from '../types/plan';
+import { reconcileBudgetAllocations } from './budgetService';
 
 interface CategoryTemplate {
   name: string;
@@ -140,31 +141,15 @@ export function generateBudgetBreakdown(
     ];
   }
 
-  // Exact Integer Arithmetic via Paise (1 INR = 100 Paise)
-  const totalPaise = Math.round(budgetInr * 100);
-  let allocatedPaiseSum = 0;
-  const categories: PlanBudgetItem[] = [];
-
-  for (let i = 0; i < templates.length; i++) {
-    const template = templates[i]!;
-    const isLast = i === templates.length - 1;
-
-    let catPaise = 0;
-    if (isLast) {
-      // Allocate remaining paise to the final category (Contingency Reserve)
-      catPaise = Math.max(0, totalPaise - allocatedPaiseSum);
-    } else {
-      catPaise = Math.floor((totalPaise * template.percentage) / 100);
-      allocatedPaiseSum += catPaise;
-    }
-
-    categories.push({
-      category: template.name,
-      allocatedInr: catPaise / 100,
-      percentage: template.percentage,
-      description: template.description,
-    });
-  }
+  // Exact Integer Arithmetic via shared reconciliation service
+  const categories: PlanBudgetItem[] = reconcileBudgetAllocations(
+    templates.map((t) => ({
+      category: t.name,
+      percentage: t.percentage,
+      description: t.description,
+    })),
+    budgetInr
+  );
 
   return {
     totalBudgetInr: budgetInr,
