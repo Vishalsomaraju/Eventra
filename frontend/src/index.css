@@ -267,6 +267,11 @@ body {
   width: 100%;
 }
 
+.form-input::placeholder {
+  color: var(--text-subtle);
+  opacity: 1;
+}
+
 .form-input:focus {
   border-color: var(--color-focus);
 }
@@ -454,6 +459,18 @@ body {
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+/* Accessibility: Respect user reduced-motion preference */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .spinner-inline,
+  .spinner-large {
+    animation: none;
   }
 }
 
