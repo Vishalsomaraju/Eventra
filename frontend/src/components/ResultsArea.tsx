@@ -299,6 +299,9 @@ const ResultsAreaComponent: React.FC<ResultsAreaProps> = ({
                       <h4 className="phase-name">{phase.phase}</h4>
                       <div className="phase-meta">
                         <span className="phase-timeframe">{phase.timeframe}</span>
+                        {phase.targetDate && (
+                          <span className="phase-target-date">• Target: {phase.targetDate}</span>
+                        )}
                       </div>
                     </div>
                   </div>

@@ -6,7 +6,6 @@ export interface AppConfig {
   readonly port: number;
   readonly nodeEnv: string;
   readonly corsOrigin: string;
-  readonly databaseUrl?: string;
   readonly geminiApiKey?: string;
   readonly geminiModel: string;
   readonly geminiTimeoutMs: number;
@@ -35,7 +34,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     port,
     nodeEnv,
     corsOrigin: env.CORS_ORIGIN || 'http://localhost:5173',
-    databaseUrl: env.DATABASE_URL && env.DATABASE_URL.trim().length > 0 ? env.DATABASE_URL.trim() : undefined,
     geminiApiKey,
     geminiModel,
     geminiTimeoutMs,

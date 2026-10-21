@@ -371,11 +371,6 @@ body {
   flex-direction: column;
 }
 
-.deliverable-card.active-preview {
-  border-color: #bfdbfe;
-  background-color: #f8fafc;
-}
-
 .deliverable-badge {
   align-self: flex-start;
   font-size: 0.6875rem;
@@ -387,11 +382,6 @@ body {
   padding: 0.15rem 0.5rem;
   border-radius: var(--radius-sm);
   margin-bottom: 0.5rem;
-}
-
-.deliverable-badge.planned {
-  background-color: var(--color-badge-bg);
-  color: var(--color-badge-text);
 }
 
 .deliverable-name {
@@ -585,15 +575,6 @@ body {
 .generation-timestamp {
   font-size: 0.8125rem;
   color: var(--text-subtle);
-}
-
-.plan-id-tag {
-  font-size: 0.75rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  color: var(--text-subtle);
-  background: var(--bg-muted);
-  padding: 0.15rem 0.5rem;
-  border-radius: var(--radius-sm);
 }
 
 .engine-fallback-notice {

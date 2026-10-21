@@ -48,6 +48,7 @@ export interface PlanBudgetBreakdown {
 export interface PlanTimelinePhase {
   phase: string;
   timeframe: string;
+  targetDate?: string;
   tasks: string[];
 }
 
