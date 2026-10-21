@@ -4,11 +4,13 @@ import helmet from 'helmet';
 import { healthRouter } from './routes/health';
 import { createPlansRouter, plansRouter } from './routes/plans';
 import { GeminiClientLike } from './services/geminiService';
+import { GeminiPlanCache } from './services/geminiCache';
 import { config } from './config';
 
 export interface AppOptions {
   planRateLimitMax?: number;
   geminiClient?: GeminiClientLike | null;
+  geminiCache?: GeminiPlanCache;
 }
 
 export function createApp(options?: AppOptions): Express {
@@ -49,10 +51,13 @@ export function createApp(options?: AppOptions): Express {
 
   // Planning API route (supports rate limit and mock Gemini injection for testing)
   const activePlansRouter =
-    options?.planRateLimitMax !== undefined || options?.geminiClient !== undefined
+    options?.planRateLimitMax !== undefined ||
+    options?.geminiClient !== undefined ||
+    options?.geminiCache !== undefined
       ? createPlansRouter({
           maxRequests: options?.planRateLimitMax,
           geminiClient: options?.geminiClient,
+          geminiCache: options?.geminiCache,
         })
       : plansRouter;
 

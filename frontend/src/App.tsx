@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import { Navigation } from './components/Navigation';
 import { PlannerForm } from './components/PlannerForm';
 import { ResultsArea } from './components/ResultsArea';
@@ -11,12 +11,12 @@ export default function App(): React.JSX.Element {
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const handleStartLoading = () => {
+  const handleStartLoading = useCallback(() => {
     setIsLoading(true);
     setErrorMessage(null);
-  };
+  }, []);
 
-  const handlePlanGenerated = (generatedPlan: PlanOutput) => {
+  const handlePlanGenerated = useCallback((generatedPlan: PlanOutput) => {
     setPlan(generatedPlan);
     setIsLoading(false);
     setErrorMessage(null);
@@ -26,9 +26,9 @@ export default function App(): React.JSX.Element {
     if (resultsElement) {
       resultsElement.scrollIntoView({ behavior: 'smooth' });
     }
-  };
+  }, []);
 
-  const handlePlanError = (error: string) => {
+  const handlePlanError = useCallback((error: string) => {
     setErrorMessage(error);
     setIsLoading(false);
 
@@ -37,11 +37,11 @@ export default function App(): React.JSX.Element {
     if (resultsElement) {
       resultsElement.scrollIntoView({ behavior: 'smooth' });
     }
-  };
+  }, []);
 
-  const handleDismissError = () => {
+  const handleDismissError = useCallback(() => {
     setErrorMessage(null);
-  };
+  }, []);
 
   return (
     <div className="app-container">

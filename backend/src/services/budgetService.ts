@@ -1,10 +1,13 @@
-import { PlanBudgetItem } from '../types/plan';
+import { PlanBudget, PlanBudgetItem } from '../types/plan';
 
 export interface RawBudgetItemInput {
   category: string;
   percentage: number;
   description: string;
 }
+
+export const DEFAULT_BUDGET_DISCLAIMER =
+  'Estimated allocation breakdown for planning guidance only. Actual vendor quotations and seasonal pricing may vary.';
 
 /**
  * Reconciles category budget allocations with exact integer paise arithmetic.
@@ -68,4 +71,22 @@ export function reconcileBudgetAllocations(
   }
 
   return categories;
+}
+
+/**
+ * Builds a standardized PlanBudget object with reconciled integer-paise allocations
+ * and standard disclaimer.
+ */
+export function buildPlanBudget(
+  rawCategories: RawBudgetItemInput[],
+  budgetInr: number,
+  disclaimer: string = DEFAULT_BUDGET_DISCLAIMER
+): PlanBudget {
+  const categories = reconcileBudgetAllocations(rawCategories, budgetInr);
+  return {
+    totalBudgetInr: budgetInr,
+    currency: 'INR',
+    disclaimer,
+    categories,
+  };
 }

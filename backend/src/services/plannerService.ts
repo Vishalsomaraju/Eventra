@@ -1,7 +1,6 @@
 import {
   GeneratePlanInput,
   PlanBudget,
-  PlanBudgetItem,
   PlanIdea,
   PlanOutput,
   PlanTimeline,
@@ -9,7 +8,8 @@ import {
   SupportedEventType,
   VendorChecklistItem,
 } from '../types/plan';
-import { reconcileBudgetAllocations } from './budgetService';
+import { buildPlanBudget } from './budgetService';
+import { offsetDays } from './timelineService';
 
 interface CategoryTemplate {
   name: string;
@@ -142,7 +142,7 @@ export function generateBudgetBreakdown(
   }
 
   // Exact Integer Arithmetic via shared reconciliation service
-  const categories: PlanBudgetItem[] = reconcileBudgetAllocations(
+  return buildPlanBudget(
     templates.map((t) => ({
       category: t.name,
       percentage: t.percentage,
@@ -150,14 +150,6 @@ export function generateBudgetBreakdown(
     })),
     budgetInr
   );
-
-  return {
-    totalBudgetInr: budgetInr,
-    currency: 'INR',
-    disclaimer:
-      'Estimated allocation breakdown for planning guidance only. Actual vendor quotations and seasonal pricing may vary.',
-    categories,
-  };
 }
 
 /**
@@ -296,20 +288,6 @@ export function generatePersonalizedIdeas(
   }
 
   return ideas;
-}
-
-/**
- * Calculates date offset in YYYY-MM-DD format relative to base UTC date.
- */
-function offsetDays(isoDate: string, daysOffset: number): string {
-  const parts = isoDate.split('-').map((p) => parseInt(p, 10));
-  const year = parts[0]!;
-  const month = parts[1]! - 1; // 0-indexed month
-  const day = parts[2]!;
-
-  const date = new Date(Date.UTC(year, month, day));
-  date.setUTCDate(date.getUTCDate() + daysOffset);
-  return date.toISOString().slice(0, 10);
 }
 
 /**

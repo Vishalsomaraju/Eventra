@@ -1,12 +1,14 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { validatePlanInput } from '../validators/planValidator';
 import { generateEventPlan, GeminiClientLike } from '../services/geminiService';
+import { GeminiPlanCache } from '../services/geminiCache';
 import { createRateLimiter } from '../middleware/rateLimiter';
 
 export interface PlansRouterOptions {
   maxRequests?: number;
   windowMs?: number;
   geminiClient?: GeminiClientLike | null;
+  geminiCache?: GeminiPlanCache;
 }
 
 export function createPlansRouter(options?: PlansRouterOptions): Router {
@@ -14,6 +16,8 @@ export function createPlansRouter(options?: PlansRouterOptions): Router {
 
   const maxRequests = options?.maxRequests ?? 30;
   const windowMs = options?.windowMs ?? 60_000;
+  const routerCache =
+    options?.geminiCache ?? (options?.geminiClient !== undefined ? new GeminiPlanCache() : undefined);
 
   // Apply IP-based rate limiting
   const planGenerationLimiter = createRateLimiter({
@@ -63,7 +67,9 @@ export function createPlansRouter(options?: PlansRouterOptions): Router {
         }
 
         // Generate plan using Gemini AI (with automatic fallback to rule-based)
-        const plan = await generateEventPlan(validation.data, options?.geminiClient);
+        const plan = await generateEventPlan(validation.data, options?.geminiClient, {
+          cache: routerCache,
+        });
 
         res.status(200).json({
           success: true,

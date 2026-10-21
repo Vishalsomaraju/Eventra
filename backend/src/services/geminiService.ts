@@ -4,12 +4,16 @@ import {
   GeneratePlanInput,
   PlanIdea,
   PlanOutput,
-  PlanTimeline,
-  PlanTimelinePhase,
   VendorChecklistItem,
 } from '../types/plan';
 import { generatePlan as generateFallbackPlan } from './plannerService';
-import { reconcileBudgetAllocations } from './budgetService';
+import { buildPlanBudget } from './budgetService';
+import { reconcileTimelinePhases } from './timelineService';
+import {
+  defaultGeminiPlanCache,
+  GeminiPlanCache,
+  ReusableGeminiContent,
+} from './geminiCache';
 
 export interface GeminiClientLike {
   models: {
@@ -29,6 +33,7 @@ export interface GeminiClientLike {
 }
 
 let cachedGeminiClient: GeminiClientLike | null = null;
+let activeCache = defaultGeminiPlanCache;
 
 export function getGeminiClient(): GeminiClientLike | null {
   if (!config.geminiApiKey) {
@@ -43,6 +48,19 @@ export function getGeminiClient(): GeminiClientLike | null {
 // Reset client for testing
 export function setGeminiClientForTesting(client: GeminiClientLike | null): void {
   cachedGeminiClient = client;
+}
+
+// Cache access and testing utilities
+export function getGeminiPlanCache(): GeminiPlanCache {
+  return activeCache;
+}
+
+export function setGeminiPlanCacheForTesting(cache: GeminiPlanCache | null): void {
+  activeCache = cache || defaultGeminiPlanCache;
+}
+
+export function clearGeminiPlanCache(): void {
+  activeCache.clear();
 }
 
 const planResponseSchema = {
@@ -239,79 +257,21 @@ function validateRawAiOutput(raw: unknown): RawGeminiOutput {
 }
 
 /**
- * Calculates date offset in YYYY-MM-DD relative to base ISO date.
+ * Formats personalized event ideas with sequential IDs and bounded string lengths.
  */
-function offsetDays(isoDate: string, daysOffset: number): string {
-  const parts = isoDate.split('-').map((p) => parseInt(p, 10));
-  const year = parts[0]!;
-  const month = parts[1]! - 1;
-  const day = parts[2]!;
-
-  const date = new Date(Date.UTC(year, month, day));
-  date.setUTCDate(date.getUTCDate() + daysOffset);
-  return date.toISOString().slice(0, 10);
+function formatPersonalizedIdeas(
+  rawIdeas: Array<{ title: string; category: string; description: string }>
+): PlanIdea[] {
+  return rawIdeas.slice(0, 6).map((idea, idx) => ({
+    id: `ai-idea-${String(idx + 1).padStart(2, '0')}`,
+    title: idea.title.slice(0, 100),
+    category: idea.category.slice(0, 60),
+    description: idea.description.slice(0, 300),
+  }));
 }
 
 /**
- * Reconciles timeline phases with target date calculation if eventDate is provided.
- * Guarantees strictly monotonic chronological ordering across all phases.
- */
-function reconcileAiTimeline(
-  rawPhases: Array<{ phase: string; timeframe: string; tasks: string[] }>,
-  eventDate?: string
-): PlanTimeline {
-  const hasDate = Boolean(eventDate);
-  const phases: PlanTimelinePhase[] = [];
-  const n = rawPhases.length;
-
-  // Compute strictly ascending day offsets (offsets[i] < offsets[i+1] <= 0)
-  let offsets: number[] = [];
-  if (n === 1) {
-    offsets = [0];
-  } else {
-    const defaultSteps = [-180, -120, -90, -60, -30, -14, -7, 0];
-    if (n <= defaultSteps.length) {
-      offsets = defaultSteps.slice(defaultSteps.length - n);
-    } else {
-      const maxSpan = Math.max(180, n * 14);
-      for (let i = 0; i < n; i++) {
-        offsets.push(Math.round(-maxSpan * (1 - i / (n - 1))));
-      }
-      for (let i = 1; i < offsets.length; i++) {
-        if (offsets[i]! <= offsets[i - 1]!) {
-          offsets[i] = offsets[i - 1]! + 1;
-        }
-      }
-      offsets[n - 1] = 0;
-    }
-  }
-
-  for (let i = 0; i < rawPhases.length; i++) {
-    const raw = rawPhases[i]!;
-    const isLast = i === rawPhases.length - 1;
-
-    let targetDate: string | undefined;
-    if (eventDate) {
-      targetDate = isLast ? eventDate : offsetDays(eventDate, offsets[i] ?? -30);
-    }
-
-    phases.push({
-      phase: raw.phase.slice(0, 100),
-      timeframe: raw.timeframe.slice(0, 50),
-      targetDate,
-      tasks: raw.tasks.slice(0, 8).map((t) => String(t).slice(0, 200)),
-    });
-  }
-
-  return {
-    timelineType: hasDate ? 'date_relative' : 'relative',
-    targetDate: eventDate || null,
-    phases,
-  };
-}
-
-/**
- * Formats vendor checklist with sequential IDs.
+ * Formats vendor checklist with sequential IDs and pending status.
  */
 function reconcileAiVendorChecklist(
   rawList: Array<{ category: string; task: string; priority: 'high' | 'medium' | 'low' }>
@@ -326,12 +286,51 @@ function reconcileAiVendorChecklist(
 }
 
 /**
+ * Constructs a complete PlanOutput from reusable model content, recalculating
+ * request-specific integer paise budget allocations and event-relative calendar dates.
+ */
+function buildPlanFromAiContent(
+  content: ReusableGeminiContent,
+  input: GeneratePlanInput
+): PlanOutput {
+  const budgetBreakdown = buildPlanBudget(content.budgetCategories, input.budgetInr);
+  const planningTimeline = reconcileTimelinePhases(content.timelinePhases, input.eventDate);
+  const vendorChecklist = reconcileAiVendorChecklist(content.vendorChecklist);
+  const personalizedIdeas = formatPersonalizedIdeas(content.personalizedIdeas);
+
+  return {
+    engine: {
+      type: 'ai',
+      model: content.model || config.geminiModel,
+      provider: 'google-gemini',
+      disclaimer:
+        'This plan was generated by Google Gemini AI with exact deterministic budget reconciliation. Financial figures are estimates for planning purposes, not confirmed vendor quotes.',
+    },
+    summary: {
+      eventType: input.eventType,
+      eventName: input.eventName,
+      eventDate: input.eventDate,
+      eventLocation: input.eventLocation,
+      guestCount: input.guestCount,
+      budgetInr: input.budgetInr,
+      preferences: input.preferences,
+    },
+    personalizedIdeas,
+    budgetBreakdown,
+    planningTimeline,
+    vendorChecklist,
+  };
+}
+
+/**
  * Generates an event plan using Google Gemini with deterministic budget reconciliation,
- * with graceful fallback to the rule-based planner if Gemini is unavailable or fails.
+ * with bounded caching to prevent duplicate model calls and graceful fallback to the
+ * rule-based planner if Gemini is unavailable or fails.
  */
 export async function generateEventPlan(
   input: GeneratePlanInput,
-  clientOverride?: GeminiClientLike | null
+  clientOverride?: GeminiClientLike | null,
+  options?: { skipCache?: boolean; cache?: GeminiPlanCache }
 ): Promise<PlanOutput> {
   const client = clientOverride !== undefined ? clientOverride : getGeminiClient();
 
@@ -340,6 +339,26 @@ export async function generateEventPlan(
       isFallback: true,
       fallbackReason: 'Google Gemini API key is not configured on the server.',
     });
+  }
+
+  const cache = options?.cache ?? activeCache;
+
+  // Derive deterministic cache key from inputs that dictate generated content
+  const cacheKey = cache.computeKey({
+    eventType: input.eventType,
+    guestCount: input.guestCount,
+    budgetInr: input.budgetInr,
+    eventName: input.eventName,
+    eventLocation: input.eventLocation,
+    preferences: input.preferences,
+  });
+
+  // Re-use cached content if available, recalculating request-specific budget and timeline
+  if (!options?.skipCache) {
+    const cachedContent = cache.get(cacheKey);
+    if (cachedContent) {
+      return buildPlanFromAiContent(cachedContent, input);
+    }
   }
 
   const systemInstruction = `You are Eventra's expert Celebration & Event Planning AI.
@@ -428,49 +447,18 @@ Provide tailored, culturally resonant ideas, realistic budget breakdown categori
     const parsedJson = JSON.parse(cleanJsonText);
     const validatedOutput = validateRawAiOutput(parsedJson);
 
-    // Reconcile budget categories via shared service to guarantee exact sum match
-    const budgetCategories = reconcileBudgetAllocations(
-      validatedOutput.budgetCategories,
-      input.budgetInr
-    );
-    const planningTimeline = reconcileAiTimeline(validatedOutput.timelinePhases, input.eventDate);
-    const vendorChecklist = reconcileAiVendorChecklist(validatedOutput.vendorChecklist);
-
-    const personalizedIdeas: PlanIdea[] = validatedOutput.personalizedIdeas.slice(0, 6).map((idea, idx) => ({
-      id: `ai-idea-${String(idx + 1).padStart(2, '0')}`,
-      title: idea.title.slice(0, 100),
-      category: idea.category.slice(0, 60),
-      description: idea.description.slice(0, 300),
-    }));
-
-    return {
-      engine: {
-        type: 'ai',
-        model: config.geminiModel,
-        provider: 'google-gemini',
-        disclaimer:
-          'This plan was generated by Google Gemini AI with exact deterministic budget reconciliation. Financial figures are estimates for planning purposes, not confirmed vendor quotes.',
-      },
-      summary: {
-        eventType: input.eventType,
-        eventName: input.eventName,
-        eventDate: input.eventDate,
-        eventLocation: input.eventLocation,
-        guestCount: input.guestCount,
-        budgetInr: input.budgetInr,
-        preferences: input.preferences,
-      },
-      personalizedIdeas,
-      budgetBreakdown: {
-        totalBudgetInr: input.budgetInr,
-        currency: 'INR',
-        disclaimer:
-          'Estimated allocation breakdown for planning guidance only. Actual vendor quotations and seasonal pricing may vary.',
-        categories: budgetCategories,
-      },
-      planningTimeline,
-      vendorChecklist,
+    // Save validated reusable concept into bounded in-memory cache
+    const reusableContent: ReusableGeminiContent = {
+      personalizedIdeas: validatedOutput.personalizedIdeas,
+      budgetCategories: validatedOutput.budgetCategories,
+      timelinePhases: validatedOutput.timelinePhases,
+      vendorChecklist: validatedOutput.vendorChecklist,
+      model: config.geminiModel,
     };
+    cache.set(cacheKey, reusableContent);
+
+    // Reconcile dynamic request-specific budget and timeline
+    return buildPlanFromAiContent(reusableContent, input);
   } catch (err: unknown) {
     const rawErrorMessage = err instanceof Error ? err.message : 'Unknown AI provider error';
     let fallbackReason = 'AI generation encountered a provider issue.';

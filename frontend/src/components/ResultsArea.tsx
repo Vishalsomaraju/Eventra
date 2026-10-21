@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { PlanOutput, VendorChecklistItem } from '../types';
+import React, { useState, useMemo } from 'react';
+import { PlanOutput } from '../types';
+import { VendorChecklistSection } from './VendorChecklistSection';
 
 interface ResultsAreaProps {
   plan: PlanOutput | null;
@@ -14,39 +15,27 @@ const eventTypeLabels: Record<string, string> = {
   community: 'Community Event',
 };
 
-export const ResultsArea: React.FC<ResultsAreaProps> = ({
+const ResultsAreaComponent: React.FC<ResultsAreaProps> = ({
   plan,
   isLoading,
   errorMessage,
   onDismissError,
 }) => {
-  // Local checklist state to allow interactive task progression in the browser
-  const [checklist, setChecklist] = useState<VendorChecklistItem[]>([]);
+  // Key-based state reset: Track plan reference to ensure checklist state
+  // resets cleanly on every newly generated plan without redundant useEffect synchronization.
+  const [prevPlan, setPrevPlan] = useState<PlanOutput | null>(null);
+  const [planInstanceId, setPlanInstanceId] = useState<number>(0);
 
-  // Keep local checklist in sync whenever a new plan is generated
-  useEffect(() => {
-    if (plan?.vendorChecklist) {
-      setChecklist(plan.vendorChecklist);
-    }
-  }, [plan]);
+  if (plan !== prevPlan) {
+    setPrevPlan(plan);
+    setPlanInstanceId((prev) => prev + 1);
+  }
 
-  const handleToggleVendorStatus = (id: string) => {
-    setChecklist((prev) =>
-      prev.map((item) => {
-        if (item.id !== id) return item;
-        const nextStatus: Record<VendorChecklistItem['status'], VendorChecklistItem['status']> = {
-          pending: 'in_progress',
-          in_progress: 'booked',
-          booked: 'pending',
-        };
-        return { ...item, status: nextStatus[item.status] };
-      })
-    );
-  };
-
-  const totalAllocatedInr = plan?.budgetBreakdown?.categories
-    ? plan.budgetBreakdown.categories.reduce((acc, cat) => acc + cat.allocatedInr, 0)
-    : 0;
+  const totalAllocatedInr = useMemo(() => {
+    return plan?.budgetBreakdown?.categories
+      ? plan.budgetBreakdown.categories.reduce((acc, cat) => acc + cat.allocatedInr, 0)
+      : 0;
+  }, [plan?.budgetBreakdown?.categories]);
 
   return (
     <section className="results-section" aria-labelledby="results-heading">
@@ -326,56 +315,11 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
             </div>
           </section>
 
-          {/* Artifact 4: Vendor Checklist */}
-          <section className="deliverable-section" aria-labelledby="vendor-title">
-            <div className="deliverable-header">
-              <div className="deliverable-title-group">
-                <span className="deliverable-badge active">Artifact 4</span>
-                <h3 id="vendor-title" className="deliverable-section-title">
-                  Actionable Vendor Checklist
-                </h3>
-              </div>
-              <span className="checklist-helper-text">Click status tag to toggle progress</span>
-            </div>
-
-            <div className="vendor-checklist-table-container">
-              <table className="vendor-table">
-                <thead>
-                  <tr>
-                    <th scope="col">Category</th>
-                    <th scope="col">Action Item</th>
-                    <th scope="col">Priority</th>
-                    <th scope="col">Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {checklist.map((item) => (
-                    <tr key={item.id} className={`status-row-${item.status}`}>
-                      <td className="vendor-category">{item.category}</td>
-                      <td className="vendor-task">{item.task}</td>
-                      <td>
-                        <span className={`priority-badge priority-${item.priority}`}>
-                          {item.priority}
-                        </span>
-                      </td>
-                      <td>
-                        <button
-                          type="button"
-                          className={`status-toggle-btn status-${item.status}`}
-                          onClick={() => handleToggleVendorStatus(item.id)}
-                          aria-label={`Toggle status for ${item.task}, currently ${item.status}`}
-                        >
-                          {item.status === 'booked' && '✓ Booked'}
-                          {item.status === 'in_progress' && '⏳ In Progress'}
-                          {item.status === 'pending' && '○ Pending'}
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
+          {/* Artifact 4: Vendor Checklist (Isolated component boundary for zero-rerender checklist interactions) */}
+          <VendorChecklistSection
+            key={`checklist-${planInstanceId}`}
+            initialChecklist={plan.vendorChecklist}
+          />
 
           {/* Disclaimer & Transparency Footer */}
           <div className="plan-disclaimer-card">
@@ -390,3 +334,5 @@ export const ResultsArea: React.FC<ResultsAreaProps> = ({
     </section>
   );
 };
+
+export const ResultsArea = React.memo<ResultsAreaProps>(ResultsAreaComponent);
