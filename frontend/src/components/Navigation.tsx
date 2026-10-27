@@ -18,6 +18,9 @@ export const Navigation: React.FC = () => {
             <li>
               <a href="#how-it-works">How It Works</a>
             </li>
+            <li>
+              <a href="#licenses">Licenses</a>
+            </li>
           </ul>
         </nav>
       </div>
