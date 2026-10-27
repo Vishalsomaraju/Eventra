@@ -3,7 +3,6 @@ import { Navigation } from './components/Navigation';
 import { PlannerForm } from './components/PlannerForm';
 import { ResultsArea } from './components/ResultsArea';
 import { HowItWorks } from './components/HowItWorks';
-import { Licenses } from './components/Licenses';
 import { PlanOutput } from './types';
 
 export default function App(): React.JSX.Element {
@@ -85,8 +84,6 @@ export default function App(): React.JSX.Element {
         {/* How It Works Section */}
         <HowItWorks />
 
-        {/* Licenses Section */}
-        <Licenses />
       </main>
 
       <footer className="site-footer">
@@ -100,9 +97,6 @@ export default function App(): React.JSX.Element {
             </li>
             <li>
               <a href="#how-it-works">How It Works</a>
-            </li>
-            <li>
-              <a href="#licenses">Licenses</a>
             </li>
           </ul>
         </div>
